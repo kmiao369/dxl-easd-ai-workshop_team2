@@ -207,45 +207,47 @@ def diagnose_incident(logs: str, ai) -> dict:
 
 #     return ai.ask("incident_diagnosis", logs)[0]   # [0] is unverified; fix it
 
-
 def review_migration(v1: dict, v2: dict, ai) -> list[dict]:
-    """Level 4 -- return only breaking changes proven by the two contracts.
+    findings = ai.ask("migration_review", {"v1": v1, "v2": v2})
 
-    ai.ask("migration_review", {...}) returns a list like:
-        [
-          {
-            "id": "BREAK-POST",
-            "claim": "POST /orders was removed in v2.",
-            "kind": "operation_removed",
-            "path": "/orders",
-            "method": "post"
-          },
-          {
-            "id": "BREAK-LIMIT",
-            "claim": "The limit query parameter became required.",
-            "kind": "parameter_became_required",
-            "path": "/orders",
-            "method": "get",
-            "parameter": "limit"
-          },
-          {
-            "id": "BREAK-003",
-            "claim": "orderId changed from integer to string.",
-            "kind": "schema_changed",
-            "path": "/orders/{orderId}",
-            "method": "get",
-            "parameter": "orderId"
-          }
-        ]
+    verified = []
+    for finding in findings:
+        if finding["kind"] == "operation_removed":
+            # Check operation exists in v1 but not in v2
+            v1_op = v1["paths"].get(finding["path"], {}).get(finding["method"])
+            v2_op = v2["paths"].get(finding["path"], {}).get(finding["method"])
+            if v1_op and not v2_op:
+                verified.append(finding)
 
-    Compare each claim against data/openapi-v1.json and data/openapi-v2.json
-    (Swagger: http://localhost:8081/api/v1 and http://localhost:8081/api/v2).
+        elif finding["kind"] == "parameter_became_required":
+            # Check required changed False → True
+            v1_param = next((p for p in v1["paths"][finding["path"]][finding["method"]].get("parameters", [])
+                           if p["name"] == finding["parameter"]), None)
+            v2_param = next((p for p in v2["paths"][finding["path"]][finding["method"]].get("parameters", [])
+                           if p["name"] == finding["parameter"]), None)
+            if v1_param and v2_param:
+                if not v1_param.get("required", False) and v2_param.get("required", False):
+                    verified.append(finding)
 
-    Verify each change by comparing v1 and v2 directly.
-      "operation_removed"       -- operation exists in v1 but not in v2.
-      "parameter_became_required" -- parameter.required is False in v1
-                                     and True in v2.
-      "schema_changed"          -- parameter["schema"] differs between v1 and v2.
-                                   If the schemas are identical the claim is false.
-    """
-    return ai.ask("migration_review", {"v1": v1, "v2": v2})
+        elif finding["kind"] == "schema_changed":
+            # Extract parameter schema from v1
+            v1_params = v1["paths"][finding["path"]][finding["method"]].get("parameters", [])
+            v1_param = next((p for p in v1_params if p["name"] == finding["parameter"]), None)
+            v1_schema = v1_param.get("schema", {}) if v1_param else None
+
+            # Extract parameter schema from v2
+            v2_params = v2["paths"][finding["path"]][finding["method"]].get("parameters", [])
+            v2_param = next((p for p in v2_params if p["name"] == finding["parameter"]), None)
+            v2_schema = v2_param.get("schema", {}) if v2_param else None
+
+            # Compare schemas
+            # Check schemas actually differ
+            if v1_schema and v2_schema and v1_schema != v2_schema:
+                verified.append(finding)
+
+#             v1_schema = # extract parameter schema from v1
+#             v2_schema = # extract parameter schema from v2
+#             if v1_schema != v2_schema:
+#                 verified.append(finding)
+
+    return verified
