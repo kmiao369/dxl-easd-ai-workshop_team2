@@ -51,7 +51,58 @@ def review_contract(spec: dict, ai) -> list[dict]:
          "/paths/~1orders/get" is spec["paths"]["/orders"]["get"].
          It is not "//orders" -- the slash belongs to the key name "/orders".
     """
-    return ai.ask("contract_review", spec)
+    """
+    Team two interpretation: 
+    For this level our goal is to implement the review_contract function, call the ai.ask function, iterate through the response, filter out wrong one and return only the valid ones
+    Question: how do we know we need to call the ai.ask function?
+    """
+    findings = ai.ask("contract_review", spec) #Team2: Call the ai.ask functio
+    valid_findings = [] #Team2: initiate a list for the valid responses to return
+
+    #Team2: loop through the returned findings comparing if path exist in the spec, method exit in the spec, evidence_pointer exist in the spec
+    for finding in findings:
+        path = finding["path"]
+        method = finding["method"]
+        evidence_pointer = finding["evidence_pointer"]
+
+        print(f"for path: {path}, method: {method}, evidence_pointer: {evidence_pointer}")
+        
+        # Check 1: Does the path/method exist?
+        if path not in spec["paths"] or method not in spec["paths"][path]:
+            print(f"path: {path} does not exist")
+            continue
+        
+        # Check 2: Does the evidence_pointer resolve?
+        if not resolve_json_pointer(spec, evidence_pointer):
+            print(f"evidence_point: {evidence_pointer} does not exist")
+            continue
+        
+        # If both checks pass, keep it
+        print(f"finding for path: {path}, method: {method}, evidence_pointer: {evidence_pointer} is valid")
+        valid_findings.append(finding)
+    print(valid_findings)    
+    return valid_findings
+
+def resolve_json_pointer(spec, pointer):
+    """Check if a JSON Pointer path exists in spec."""
+    if not pointer.startswith("/"):
+        return False
+    
+    keys = pointer[1:].split("/")  # Skip leading "/", then split
+    keys = [k.replace("~1", "/") for k in keys]  # Decode ~1 → /
+    
+    current = spec
+    for key in keys:
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+        elif isinstance(current, list):
+            try:
+                current = current[int(key)]
+            except (ValueError, IndexError):
+                return False
+        else:
+            return False
+    return True
 
 
 def design_negative_tests(spec: dict, ai) -> list[dict]:
@@ -86,7 +137,27 @@ def design_negative_tests(spec: dict, ai) -> list[dict]:
       3. The case has all required fields: name, method, path, input,
          expected_status.
     """
-    return ai.ask("negative_tests", spec)
+    cases = ai.ask("negative_tests", spec)
+    valid_cases = []
+    
+    for case in cases:
+        # Check 1: Required fields present
+        if not all(k in case for k in ["name", "method", "path", "input", "expected_status"]):
+            continue
+        
+        # Check 2: Endpoint exists in spec
+        path = case["path"]
+        method = case["method"].lower()
+        if path not in spec["paths"] or method not in spec["paths"][path]:
+            continue
+        
+        # Check 3: expected_status is in the allowlist
+        if case["expected_status"] not in [400, 401, 403, 404, 409, 422]:
+            continue
+        
+        valid_cases.append(case)
+    
+    return valid_cases
 
 
 def diagnose_incident(logs: str, ai) -> dict:
@@ -112,7 +183,15 @@ def diagnose_incident(logs: str, ai) -> dict:
     appears literally somewhere inside the logs string.
     The log file is at  data/incident.log  -- open it to see what is there.
     """
-    return ai.ask("incident_diagnosis", logs)[0]   # [0] is unverified; fix it
+    candidates = ai.ask("incident_diagnosis", logs)
+    
+    for candidate in candidates:
+        # Check if ALL evidence strings appear literally in the logs
+        if all(evidence in logs for evidence in candidate["evidence"]):
+            return candidate
+    
+    # No candidate matched
+    return {}
 
 
 def review_migration(v1: dict, v2: dict, ai) -> list[dict]:
@@ -155,4 +234,38 @@ def review_migration(v1: dict, v2: dict, ai) -> list[dict]:
       "schema_changed"          -- parameter["schema"] differs between v1 and v2.
                                    If the schemas are identical the claim is false.
     """
-    return ai.ask("migration_review", {"v1": v1, "v2": v2})
+    findings = ai.ask("migration_review", {"v1": v1, "v2": v2})
+    verified = []
+    
+    for finding in findings:
+        kind = finding["kind"]
+        path = finding["path"]
+        method = finding["method"]
+        
+        if kind == "operation_removed":
+            op_v1 = v1["paths"].get(path, {}).get(method)
+            op_v2 = v2["paths"].get(path, {}).get(method)
+            if op_v1 is not None and op_v2 is None:
+                verified.append(finding)
+        
+        elif kind == "parameter_became_required":
+            param_name = finding["parameter"]
+            param_v1 = next((p for p in v1["paths"][path][method].get("parameters", []) 
+                           if p["name"] == param_name), None)
+            param_v2 = next((p for p in v2["paths"][path][method].get("parameters", []) 
+                           if p["name"] == param_name), None)
+            if param_v1 and param_v2:
+                if not param_v1.get("required", False) and param_v2.get("required", False):
+                    verified.append(finding)
+        
+        elif kind == "schema_changed":
+            param_name = finding["parameter"]
+            param_v1 = next((p for p in v1["paths"][path][method].get("parameters", []) 
+                           if p["name"] == param_name), None)
+            param_v2 = next((p for p in v2["paths"][path][method].get("parameters", []) 
+                           if p["name"] == param_name), None)
+            if param_v1 and param_v2:
+                if param_v1.get("schema") != param_v2.get("schema"):
+                    verified.append(finding)
+    
+    return verified
