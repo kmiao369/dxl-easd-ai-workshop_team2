@@ -106,6 +106,8 @@ def resolve_json_pointer(spec, pointer):
 
 
 def design_negative_tests(spec: dict, ai) -> list[dict]:
+
+    
     """Level 2 -- return runnable test ideas for operations that really exist.
 
     ai.ask("negative_tests", spec) returns a list like:
