@@ -66,58 +66,63 @@ def review_contract(spec: dict, ai) -> list[dict]:
          "/paths/~1orders/get" is spec["paths"]["/orders"]["get"].
          It is not "//orders" -- the slash belongs to the key name "/orders".
     """
-    def resolve_json_pointer(obj: dict, pointer: str) -> tuple[bool, any]:
-        """
-        Resolve a JSON Pointer and return (found, value).
-        JSON Pointer: split on "/", decode ~1 to "/" in keys.
-        Example: "/paths/~1orders/get" → spec["paths"]["/orders"]["get"]
-        """
-        if not pointer.startswith("/"):
-            return False, None
+    """
+    Team two interpretation:
+    For this level our goal is to implement the review_contract function, call the ai.ask function, iterate through the response, filter out wrong one and return only the valid ones
+    Question: how do we know we need to call the ai.ask function?
+    """
+    findings = ai.ask("contract_review", spec) #Team2: Call the ai.ask functio
+    valid_findings = [] #Team2: initiate a list for the valid responses to return
 
-        parts = pointer[1:].split("/")  # Skip leading "/" then split
-        current = obj
+    #Team2: loop through the returned findings comparing if path exist in the spec, method exit in the spec, evidence_pointer exist in the spec
+    for finding in findings:
+        path = finding["path"]
+        method = finding["method"]
+        evidence_pointer = finding["evidence_pointer"]
 
-        for part in parts:
-            # Decode ~1 to / and ~0 to ~
-            part = part.replace("~1", "/").replace("~0", "~")
+        print(f"for path: {path}, method: {method}, evidence_pointer: {evidence_pointer}")
 
-            if isinstance(current, dict) and part in current:
-                current = current[part]
-            elif isinstance(current, list):
-                try:
-                    current = current[int(part)]
-                except (ValueError, IndexError):
-                    return False
-            else:
+        # Check 1: Does the path/method exist?
+        if path not in spec["paths"] or method not in spec["paths"][path]:
+            print(f"path: {path} does not exist")
+            continue
+
+        # Check 2: Does the evidence_pointer resolve?
+        if not resolve_json_pointer(spec, evidence_pointer):
+            print(f"evidence_point: {evidence_pointer} does not exist")
+            continue
+
+        # If both checks pass, keep it
+        print(f"finding for path: {path}, method: {method}, evidence_pointer: {evidence_pointer} is valid")
+        valid_findings.append(finding)
+    print(valid_findings)
+    return valid_findings
+
+def resolve_json_pointer(spec, pointer):
+    """Check if a JSON Pointer path exists in spec."""
+    if not pointer.startswith("/"):
+        return False
+
+    keys = pointer[1:].split("/")  # Skip leading "/", then split
+    keys = [k.replace("~1", "/") for k in keys]  # Decode ~1 → /
+
+    current = spec
+    for key in keys:
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+        elif isinstance(current, list):
+            try:
+                current = current[int(key)]
+            except (ValueError, IndexError):
                 return False
-
-        return True, current
-
-    def is_valid_finding(finding: dict, spec: dict) -> bool:
-        """Check if finding is supported by the spec."""
-        path = finding.get("path")
-        method = finding.get("method")
-        evidence_pointer = finding.get("evidence_pointer")
-
-        # Check 1: Does the endpoint exist?
-        if path not in spec.get("paths", {}):
+        else:
             return False
-        if method not in spec["paths"][path]:
-            return False
-
-        # Check 2: Does the evidence pointer resolve?
-        found, _ = resolve_json_pointer(spec, evidence_pointer)
-        return found
-
-    # Get AI findings
-    findings = ai.ask("contract_review", spec)
-
-    # Filter to only valid findings
-    return [f for f in findings if is_valid_finding(f, spec)]
+    return True
 
 
 def design_negative_tests(spec: dict, ai) -> list[dict]:
+
+
     """Level 2 -- return runnable test ideas for operations that really exist.
 
     ai.ask("negative_tests", spec) returns a list like:
@@ -150,26 +155,26 @@ def design_negative_tests(spec: dict, ai) -> list[dict]:
          expected_status.
     """
     cases = ai.ask("negative_tests", spec)
+    valid_cases = []
 
-    filtered = []
     for case in cases:
-        # Check all required fields exist
+        # Check 1: Required fields present
         if not all(k in case for k in ["name", "method", "path", "input", "expected_status"]):
             continue
 
-        # Check path and method exist in spec
-        if case["path"] not in spec["paths"]:
-            continue
-        if case["method"] not in spec["paths"][case["path"]]:
+        # Check 2: Endpoint exists in spec
+        path = case["path"]
+        method = case["method"].lower()
+        if path not in spec["paths"] or method not in spec["paths"][path]:
             continue
 
-        # Check expected_status is in the allowed list
+        # Check 3: expected_status is in the allowlist
         if case["expected_status"] not in [400, 401, 403, 404, 409, 422]:
             continue
 
-        filtered.append(case)
+        valid_cases.append(case)
 
-    return filtered
+    return valid_cases
 
 
 def diagnose_incident(logs: str, ai) -> dict:
@@ -198,56 +203,86 @@ def diagnose_incident(logs: str, ai) -> dict:
     candidates = ai.ask("incident_diagnosis", logs)
 
     for candidate in candidates:
-        # Check if every evidence string appears in the logs
+        # Check if ALL evidence strings appear literally in the logs
         if all(evidence in logs for evidence in candidate["evidence"]):
             return candidate
 
-    # No valid diagnosis found
-    return None
+    # No candidate matched
+    return {}
 
-#     return ai.ask("incident_diagnosis", logs)[0]   # [0] is unverified; fix it
 
 def review_migration(v1: dict, v2: dict, ai) -> list[dict]:
-    findings = ai.ask("migration_review", {"v1": v1, "v2": v2})
+    """Level 4 -- return only breaking changes proven by the two contracts.
 
+    ai.ask("migration_review", {...}) returns a list like:
+        [
+          {
+            "id": "BREAK-POST",
+            "claim": "POST /orders was removed in v2.",
+            "kind": "operation_removed",
+            "path": "/orders",
+            "method": "post"
+          },
+          {
+            "id": "BREAK-LIMIT",
+            "claim": "The limit query parameter became required.",
+            "kind": "parameter_became_required",
+            "path": "/orders",
+            "method": "get",
+            "parameter": "limit"
+          },
+          {
+            "id": "BREAK-003",
+            "claim": "orderId changed from integer to string.",
+            "kind": "schema_changed",
+            "path": "/orders/{orderId}",
+            "method": "get",
+            "parameter": "orderId"
+          }
+        ]
+
+    Compare each claim against data/openapi-v1.json and data/openapi-v2.json
+    (Swagger: http://localhost:8081/api/v1 and http://localhost:8081/api/v2).
+
+    Verify each change by comparing v1 and v2 directly.
+      "operation_removed"       -- operation exists in v1 but not in v2.
+      "parameter_became_required" -- parameter.required is False in v1
+                                     and True in v2.
+      "schema_changed"          -- parameter["schema"] differs between v1 and v2.
+                                   If the schemas are identical the claim is false.
+    """
+    findings = ai.ask("migration_review", {"v1": v1, "v2": v2})
     verified = []
+
     for finding in findings:
-        if finding["kind"] == "operation_removed":
-            # Check operation exists in v1 but not in v2
-            v1_op = v1["paths"].get(finding["path"], {}).get(finding["method"])
-            v2_op = v2["paths"].get(finding["path"], {}).get(finding["method"])
-            if v1_op and not v2_op:
+        kind = finding["kind"]
+        path = finding["path"]
+        method = finding["method"]
+
+        if kind == "operation_removed":
+            op_v1 = v1["paths"].get(path, {}).get(method)
+            op_v2 = v2["paths"].get(path, {}).get(method)
+            if op_v1 is not None and op_v2 is None:
                 verified.append(finding)
 
-        elif finding["kind"] == "parameter_became_required":
-            # Check required changed False → True
-            v1_param = next((p for p in v1["paths"][finding["path"]][finding["method"]].get("parameters", [])
-                           if p["name"] == finding["parameter"]), None)
-            v2_param = next((p for p in v2["paths"][finding["path"]][finding["method"]].get("parameters", [])
-                           if p["name"] == finding["parameter"]), None)
-            if v1_param and v2_param:
-                if not v1_param.get("required", False) and v2_param.get("required", False):
+        elif kind == "parameter_became_required":
+            param_name = finding["parameter"]
+            param_v1 = next((p for p in v1["paths"][path][method].get("parameters", [])
+                           if p["name"] == param_name), None)
+            param_v2 = next((p for p in v2["paths"][path][method].get("parameters", [])
+                           if p["name"] == param_name), None)
+            if param_v1 and param_v2:
+                if not param_v1.get("required", False) and param_v2.get("required", False):
                     verified.append(finding)
 
-        elif finding["kind"] == "schema_changed":
-            # Extract parameter schema from v1
-            v1_params = v1["paths"][finding["path"]][finding["method"]].get("parameters", [])
-            v1_param = next((p for p in v1_params if p["name"] == finding["parameter"]), None)
-            v1_schema = v1_param.get("schema", {}) if v1_param else None
-
-            # Extract parameter schema from v2
-            v2_params = v2["paths"][finding["path"]][finding["method"]].get("parameters", [])
-            v2_param = next((p for p in v2_params if p["name"] == finding["parameter"]), None)
-            v2_schema = v2_param.get("schema", {}) if v2_param else None
-
-            # Compare schemas
-            # Check schemas actually differ
-            if v1_schema and v2_schema and v1_schema != v2_schema:
-                verified.append(finding)
-
-#             v1_schema = # extract parameter schema from v1
-#             v2_schema = # extract parameter schema from v2
-#             if v1_schema != v2_schema:
-#                 verified.append(finding)
+        elif kind == "schema_changed":
+            param_name = finding["parameter"]
+            param_v1 = next((p for p in v1["paths"][path][method].get("parameters", [])
+                           if p["name"] == param_name), None)
+            param_v2 = next((p for p in v2["paths"][path][method].get("parameters", [])
+                           if p["name"] == param_name), None)
+            if param_v1 and param_v2:
+                if param_v1.get("schema") != param_v2.get("schema"):
+                    verified.append(finding)
 
     return verified
