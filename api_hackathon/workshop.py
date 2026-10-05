@@ -149,7 +149,27 @@ def design_negative_tests(spec: dict, ai) -> list[dict]:
       3. The case has all required fields: name, method, path, input,
          expected_status.
     """
-    return ai.ask("negative_tests", spec)
+    cases = ai.ask("negative_tests", spec)
+
+    filtered = []
+    for case in cases:
+        # Check all required fields exist
+        if not all(k in case for k in ["name", "method", "path", "input", "expected_status"]):
+            continue
+
+        # Check path and method exist in spec
+        if case["path"] not in spec["paths"]:
+            continue
+        if case["method"] not in spec["paths"][case["path"]]:
+            continue
+
+        # Check expected_status is in the allowed list
+        if case["expected_status"] not in [400, 401, 403, 404, 409, 422]:
+            continue
+
+        filtered.append(case)
+
+    return filtered
 
 
 def diagnose_incident(logs: str, ai) -> dict:
