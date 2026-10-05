@@ -195,7 +195,17 @@ def diagnose_incident(logs: str, ai) -> dict:
     appears literally somewhere inside the logs string.
     The log file is at  data/incident.log  -- open it to see what is there.
     """
-    return ai.ask("incident_diagnosis", logs)[0]   # [0] is unverified; fix it
+    candidates = ai.ask("incident_diagnosis", logs)
+
+    for candidate in candidates:
+        # Check if every evidence string appears in the logs
+        if all(evidence in logs for evidence in candidate["evidence"]):
+            return candidate
+
+    # No valid diagnosis found
+    return None
+
+#     return ai.ask("incident_diagnosis", logs)[0]   # [0] is unverified; fix it
 
 
 def review_migration(v1: dict, v2: dict, ai) -> list[dict]:
