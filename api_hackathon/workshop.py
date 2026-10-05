@@ -18,6 +18,21 @@ shown in the comments below. Your job is to filter that list so only items
 that are verifiable against real evidence survive.
 """
 
+def is_valid_finding(finding: dict, spec: dict) -> bool:
+        """Check if finding is supported by the spec."""
+        path = finding.get("path")
+        method = finding.get("method")
+        evidence_pointer = finding.get("evidence_pointer")
+
+        # Check 1: Does the endpoint exist?
+        if path not in spec.get("paths", {}):
+            return False
+        if method not in spec["paths"][path]:
+            return False
+
+        # Check 2: Does the evidence pointer resolve?
+        found, _ = resolve_json_pointer(spec, evidence_pointer)
+        return found
 
 def review_contract(spec: dict, ai) -> list[dict]:
     """Level 1 -- return only findings supported by the OpenAPI contract.
@@ -51,7 +66,55 @@ def review_contract(spec: dict, ai) -> list[dict]:
          "/paths/~1orders/get" is spec["paths"]["/orders"]["get"].
          It is not "//orders" -- the slash belongs to the key name "/orders".
     """
-    return ai.ask("contract_review", spec)
+    def resolve_json_pointer(obj: dict, pointer: str) -> tuple[bool, any]:
+        """
+        Resolve a JSON Pointer and return (found, value).
+        JSON Pointer: split on "/", decode ~1 to "/" in keys.
+        Example: "/paths/~1orders/get" → spec["paths"]["/orders"]["get"]
+        """
+        if not pointer.startswith("/"):
+            return False, None
+
+        parts = pointer[1:].split("/")  # Skip leading "/" then split
+        current = obj
+
+        for part in parts:
+            # Decode ~1 to / and ~0 to ~
+            part = part.replace("~1", "/").replace("~0", "~")
+
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            elif isinstance(current, list):
+                try:
+                    current = current[int(part)]
+                except (ValueError, IndexError):
+                    return False
+            else:
+                return False
+
+        return True, current
+
+    def is_valid_finding(finding: dict, spec: dict) -> bool:
+        """Check if finding is supported by the spec."""
+        path = finding.get("path")
+        method = finding.get("method")
+        evidence_pointer = finding.get("evidence_pointer")
+
+        # Check 1: Does the endpoint exist?
+        if path not in spec.get("paths", {}):
+            return False
+        if method not in spec["paths"][path]:
+            return False
+
+        # Check 2: Does the evidence pointer resolve?
+        found, _ = resolve_json_pointer(spec, evidence_pointer)
+        return found
+
+    # Get AI findings
+    findings = ai.ask("contract_review", spec)
+
+    # Filter to only valid findings
+    return [f for f in findings if is_valid_finding(f, spec)]
 
 
 def design_negative_tests(spec: dict, ai) -> list[dict]:
